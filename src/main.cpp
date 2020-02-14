@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <SPI.h>
 #include <Ethernet.h>
 #include <PubSubClient.h>
 #include <AsyncDelay.h>
@@ -12,72 +11,48 @@ const char* password =  "CbSsPp42";
 // ethernet 
 byte mac[]    = {  0xDE, 0xED, 0xBA, 0xFE, 0xFE, 0xED };
 IPAddress ip(192, 168, 1, 199);
-IPAddress server(192, 168, 1, 1);
  // mqtt server
 const char* mqttServer = "192.168.1.100";
 const int mqttPort = 1883;
 const char* mqttUser = "admin";
 const char* mqttPassword = "admin";
-// mqtt topics
-char *mqttSubscribeTopics[] = { "home/workroom/lights/mainConfirm" };
 //#############################################
 
-int DIGITAL_PIN_3 = 3;
-int DIGITAL_PIN_4 = 4;
 
-/* 
 struct settingsOutput {
   char* subscribedTopic;
   int pin;
   bool defaultLogic;
-  bool valueForPing;
-} settingsOutput[9] = {
-  { "dum/pracovna/svetla/hlavni", D0, HIGH, LOW },
-  { "dum/technicka/svetla/hlavni", D1, HIGH, LOW },
-  { "dum/predsin/svetla/hlavni", D2, HIGH, LOW },
-  { "dum/dolnichodba/svetla/hlavni", D3, HIGH, LOW },
-  { "dum/spiz/svetla/hlavni", D4, HIGH, LOW },
-  { "dum/dolnikoupelna/svetla/hlavni", D5, HIGH, LOW },
-  { "dum/kuchyn/svetla/hlavni", D6, HIGH, LOW },
-  { "dum/jidelna/svetla/hlavni", D7, HIGH, LOW },
-  { "dum/obyvak/svetla/hlavni", D8, HIGH, LOW }
-};
- */
-/*
-struct settingsInput {
-  char* publishToTopic;
-  int pin;
-} settingsInput[9] = {
-  { "dum/pracovna/svetla/hlavniPotvrzeni", D0 },
-  { "dum/technicka/svetla/hlavniPotvrzeni", D1 },
-  { "dum/predsin/svetla/hlavniPotvrzeni", D2 },
-  { "dum/dolnichodba/svetla/hlavniPotvrzeni", D3 },
-  { "dum/spiz/svetla/hlavniPotvrzeni", D4 },
-  { "dum/dolnikoupelna/svetla/hlavniPotvrzeni", D5 },
-  { "dum/kuchyn/svetla/hlavniPotvrzeni", D6 },
-  { "dum/jidelna/svetla/hlavniPotvrzeni", D7 },
-  { "dum/obyvak/svetla/hlavniPotvrzeni", D8 }
-};
-*/
-
-// read topic and set digital pin 
-struct settingsOutput {
-  char* subscribedTopic;
-  int pin;
-  bool defaultLogic;
+  bool pingAndReturn;
   bool valueForPing;
 } settingsOutput[1] = {
-  { "dum/pracovna/svetla/hlavni", DIGITAL_PIN_3, HIGH, LOW }
+  { "dum/pracovna/svetla/hlavni", DD3, HIGH, true, LOW }
+  // { "dum/technicka/svetla/hlavni", DD1, HIGH, LOW },
+  // { "dum/predsin/svetla/hlavni", DD2, HIGH, LOW },
+  // { "dum/dolnichodba/svetla/hlavni", DD3, HIGH, LOW },
+  // { "dum/spiz/svetla/hlavni", DD4, HIGH, LOW },
+  // { "dum/dolnikoupelna/svetla/hlavni", DD5, HIGH, LOW },
+  // { "dum/kuchyn/svetla/hlavni", DD6, HIGH, LOW },
+  // { "dum/jidelna/svetla/hlavni", DD7, HIGH, LOW },
+  // { "dum/obyvak/svetla/hlavni", DDA0, HIGH, LOW }
 };
 
-
-// read real state and publish it to confirm topic
 struct settingsInput {
   char* publishToTopic;
   int pin;
 } settingsInput[1] = {
-  { "dum/pracovna/svetla/hlavniPotvrzeni", DIGITAL_PIN_4 }
+  { "dum/pracovna/svetla/hlavniPotvrzeni", DD4 }
+  // { "dum/technicka/svetla/hlavniPotvrzeni", DDA2 },
+  // { "dum/predsin/svetla/hlavniPotvrzeni", DDA3 },
+  // { "dum/dolnichodba/svetla/hlavniPotvrzeni", DDA4 },
+  // { "dum/spiz/svetla/hlavniPotvrzeni", DDA5 },
+  // { "dum/dolnikoupelna/svetla/hlavniPotvrzeni", DDA6 },
+  // { "dum/kuchyn/svetla/hlavniPotvrzeni", DDA7 },
+  // { "dum/jidelna/svetla/hlavniPotvrzeni", DDA },
+  // { "dum/obyvak/svetla/hlavniPotvrzeni", D8 }
 };
+
+int settingsOutputInitial[99];
 int settingsInputPrevious[99];
 
 
@@ -92,12 +67,12 @@ void connectEthernet();
 void connectMqtt();
 void restartAllConnections();
 void callback(char* topic, byte* payload, unsigned int length);
-void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned int length, bool onlyPing, bool valueForPing);
+void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned int length, bool pingAndReturn, bool valueForPing);
 void publishPortStatusToMqtt(char* topic, int port);
 
 // master setup method
 void setup() {
-  delay(5000);
+  delay(1000);
   delay_1s.start(1000, AsyncDelay::MILLIS);
   Serial.begin(115200);
 
@@ -144,7 +119,11 @@ void callback(char* topic, byte* payload, unsigned int length) {
   // ##### SUBSCRIBE TOPICS AND MAKE REACTION HERE #######
   for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
     if (strcmp(settingsOutput[i].subscribedTopic, topic) == 0) {
-      setPortViaMqttTopicStatus(settingsOutput[i].pin, settingsOutput[i].subscribedTopic, payload, length, true, settingsOutput[i].valueForPing);
+      if (settingsOutputInitial[i]) {
+        setPortViaMqttTopicStatus(settingsOutput[i].pin, settingsOutput[i].subscribedTopic, payload, length, settingsOutput[i].pingAndReturn, settingsOutput[i].valueForPing);
+      } else {
+        settingsOutputInitial[i] = digitalRead(settingsOutput[i].pin);
+      }
     }
   }
  
@@ -163,13 +142,13 @@ void publishPortStatusToMqtt(char* topic, int pin) {
   }
 }
 
-void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned int length, bool pingIfChange, bool valueForPing) {
+void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned int length, bool pingAndReturn, bool valueForPing) {
       if (!strncmp((char *)payload, "ON", length)) {
-        if (pingIfChange) {
+        if (pingAndReturn) {
           digitalWrite(port, valueForPing);
             Serial.print("Set: ");
             Serial.println(valueForPing);
-          delay(1000);
+          delay(100); //todo: predělat na async
           digitalWrite(port, !valueForPing);
             Serial.print("Set: ");
             Serial.println(!valueForPing);
@@ -184,9 +163,9 @@ void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned in
             Serial.println(" set to HIGH.");
         }
       } else if (!strncmp((char *)payload, "OFF", length)) {
-         if (pingIfChange) {
+         if (pingAndReturn) {
           digitalWrite(port, valueForPing);
-          delay(1000);
+          delay(100);
           digitalWrite(port, !valueForPing);
             Serial.print("PORT ");
             Serial.print(port);
@@ -222,14 +201,10 @@ void connectMqtt() {
     if (!client.connect("deviceId", mqttUser, mqttPassword )) {
       Serial.print("failed with state ");
       Serial.print(client.state());
-      delay(2000);
+      delay(5000);
     }
   }
   Serial.println("connected"); 
-
-  for (int i =0; i < sizeof(mqttSubscribeTopics); i++) {
-    client.subscribe(mqttSubscribeTopics[i]);
-  }
 
   for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
     client.subscribe(settingsOutput[i].subscribedTopic);
