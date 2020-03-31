@@ -2,12 +2,6 @@
 #include <Ethernet.h>
 #include <PubSubClient.h>
 #include <AsyncDelay.h>
-// #include <ESP8266WiFi.h>
-
- //############ CONFIGURATION ################
- // wifi
-// const char* ssid = "NazevSite";
-// const char* password =  "heslo";
 
 // ethernet 
 byte mac[]    = {  0xDE, 0xED, 0xBA, 0xFE, 0xFE, 0xED };
@@ -234,9 +228,6 @@ void publishPortStatusToMqtt(char* topic, int pin, bool publishTrueIfInputLow) {
 void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned int length, bool pingAndReturn, bool valueForPing) {
       if (!strncmp((char *)payload, "ON", length)) {
         if (pingAndReturn) {
-
-          // zkontrolovat aktualni status, jeslti musime pingat
-
           digitalWrite(port, valueForPing);
             Serial.print("Set: ");
             Serial.println(valueForPing);
@@ -256,9 +247,6 @@ void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned in
         }
       } else if (!strncmp((char *)payload, "OFF", length)) {
          if (pingAndReturn) {
-
-          // zkontrolovat aktualni status, jeslti musime pingat
-
           digitalWrite(port, valueForPing);
           delay(100);
           digitalWrite(port, !valueForPing);
