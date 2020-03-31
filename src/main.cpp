@@ -82,8 +82,7 @@ int settingsInputPrevious[99];
 
 // WiFiClient espClient;
 EthernetClient ethClient;
-PubSubClient client(ethClient);
-AsyncDelay delay_1s;
+PubSubClient mqttClient(ethClient);
 AsyncDelay delay_ethCheckConnection;
 
 // main methods definitions
@@ -97,24 +96,37 @@ void publishPortStatusToMqtt(char* topic, int port, bool publishTrueIfInputLow);
 
 // master setup method
 void setup() {
-  delay(1000);
-  delay_1s.start(1000, AsyncDelay::MILLIS);
-  delay_ethCheckConnection.start(5000, AsyncDelay::MILLIS);
   Serial.begin(115200);
 
-  // prepare output pins
-  Serial.println("Setting pin mode for outputs.");
+  delay_ethCheckConnection.start(5000, AsyncDelay::MILLIS); // timer for check ethernet connection
+
+  // prepare output pins (set PINs as OUTPUT and write default value from config)
+  Serial.println("Setting pin mode for OUTPUTS:");
   for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
+    Serial.print("- subscribe topic: ");
+    Serial.println(settingsOutput[i].subscribedTopic);
+    Serial.print("- pin: ");
+    Serial.println(settingsOutput[i].pin);
+    Serial.print("- logic: ");
+    Serial.println(settingsOutput[i].defaultLogic);
+
     pinMode(settingsOutput[i].pin, OUTPUT);
     digitalWrite(settingsOutput[i].pin, settingsOutput[i].defaultLogic);
   }
 
   // prepare input pins
-  Serial.println("Setting pin mode for inputs.");
+  Serial.println("Setting pin mode for INPUTS:");
   for (int i =0; i < sizeof(settingsInput) / sizeof(settingsInput[0]); i++) {
-    pinMode(settingsInput[i].pin, INPUT);
+    Serial.print("- subscribe topic: ");
+    Serial.println(settingsInput[i].publishToTopic);
+    Serial.print("- pin: ");
+    Serial.println(settingsInput[i].pin);
   
+    pinMode(settingsInput[i].pin, INPUT);
+
     if (settingsInput[i].publishTrueIfInputLow) {
+      Serial.print("- set as HIGH for enable pull-up");
+
       digitalWrite(settingsInput[i].pin, HIGH); // Enable pull-up rezistors
     }
   }
@@ -127,6 +139,8 @@ void setup() {
 void loop() {
 
   if (delay_ethCheckConnection.isExpired()) {
+    Serial.println("Check ethernet connection.");
+
     if (!ethClient.connected()) {
         Serial.println("Connection lost... Reconnecting...");
         connectEthernet();
@@ -136,13 +150,23 @@ void loop() {
     delay_ethCheckConnection.repeat();
   }
 
-  client.loop();
-
-  //todo: načíst z MQTT previous status, než se začne publishovat (nebo to vyřeší hassio tím, že bude znát aktuální stav? - zkusit)
+  mqttClient.loop();
 
   for (int i =0; i < sizeof(settingsInput) / sizeof(settingsInput[0]); i++) {
     if (digitalRead(settingsInput[i].pin) != settingsInputPrevious[i]) {
+      Serial.println("SettingsInput have changes, publish PIN status to MQTT (publishPortStatusToMqtt):");
+      Serial.print(" - topic: ");
+      Serial.println(settingsInput[i].publishToTopic);
+      Serial.print(" - pin: ");
+      Serial.println(settingsInput[i].pin);
+      Serial.print(" - publish true if input low: ");
+      Serial.println(settingsInput[i].publishTrueIfInputLow);
+
       publishPortStatusToMqtt(settingsInput[i].publishToTopic, settingsInput[i].pin, settingsInput[i].publishTrueIfInputLow);
+
+      Serial.print(" - set settingsInputPrevious:");
+      Serial.println(settingsInput[i].pin);
+
       settingsInputPrevious[i] = digitalRead(settingsInput[i].pin);
     }
   }
@@ -151,21 +175,33 @@ void loop() {
 // MQTT subscribe
 void callback(char* topic, byte* payload, unsigned int length) {
  
+  Serial.println("We are in CALLBACK");
   Serial.print("Message arrived in topic: ");
   Serial.println(topic);
-
-  Serial.print("Message:");
+  Serial.print("Message: ");
   for ( unsigned int i = 0; i < length; i++) {
     Serial.print((char)payload[i]);
   }
   Serial.println();
   
   // ##### SUBSCRIBE TOPICS AND MAKE REACTION HERE #######
+  Serial.println("Iterate on settingsOutput:");
   for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
     if (strcmp(settingsOutput[i].subscribedTopic, topic) == 0) {
+      Serial.print("- change in topic: ");
+      Serial.println(topic);
+
       if (settingsOutputInitial[i]) {
+        Serial.println("- settingsOutputInitial for pin exists!");
+        Serial.println("- setPortViaMqttTopicStatus");
+        Serial.print("- subscribed topic: ");
+        Serial.println(settingsOutput[i].subscribedTopic);
+        Serial.print("- value for ping: ");
+        Serial.println(settingsOutput[i].valueForPing);
+
         setPortViaMqttTopicStatus(settingsOutput[i].pin, settingsOutput[i].subscribedTopic, payload, length, settingsOutput[i].pingAndReturn, settingsOutput[i].valueForPing);
       } else {
+        Serial.println("- settingsOutputInitial for pin NOT exists! Creating!");
         settingsOutputInitial[i] = digitalRead(settingsOutput[i].pin);
       }
     }
@@ -175,16 +211,18 @@ void callback(char* topic, byte* payload, unsigned int length) {
 }
 
 void publishPortStatusToMqtt(char* topic, int pin, bool publishTrueIfInputLow) {
+  Serial.println("Start publishing port status to MQTT");
 
   bool pinValue = digitalRead(pin);
 
   if (publishTrueIfInputLow) {
+    Serial.println("- invert value!");
     pinValue = pinValue ? false : true;
   }
 
-  if (client.publish(topic, String(pinValue ? "ON" : "OFF").c_str(), true)) {
-    Serial.print("Publish status ");
-    Serial.print(digitalRead(pin));
+  if (mqttClient.publish(topic, String(pinValue ? "ON" : "OFF").c_str(), true)) {
+    Serial.print("- publish status: ");
+    Serial.print(String(pinValue ? "ON" : "OFF").c_str());
     Serial.print(" for pin ");
     Serial.println(pin);
     Serial.println("##############");
@@ -196,6 +234,9 @@ void publishPortStatusToMqtt(char* topic, int pin, bool publishTrueIfInputLow) {
 void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned int length, bool pingAndReturn, bool valueForPing) {
       if (!strncmp((char *)payload, "ON", length)) {
         if (pingAndReturn) {
+
+          // zkontrolovat aktualni status, jeslti musime pingat
+
           digitalWrite(port, valueForPing);
             Serial.print("Set: ");
             Serial.println(valueForPing);
@@ -215,6 +256,9 @@ void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned in
         }
       } else if (!strncmp((char *)payload, "OFF", length)) {
          if (pingAndReturn) {
+
+          // zkontrolovat aktualni status, jeslti musime pingat
+
           digitalWrite(port, valueForPing);
           delay(100);
           digitalWrite(port, !valueForPing);
@@ -230,46 +274,57 @@ void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned in
       }
 }
 
-// void connectWifi() {
-//   WiFi.begin(ssid, password);
-//   while (WiFi.status() != WL_CONNECTED) {
-//     delay(500);
-//     Serial.println("Connecting to WiFi..");
-//   }
-//   Serial.println("Connected to the WiFi network");
-// }
-
 void connectEthernet() {
+  Serial.println("Connect to ethernet wire");
+
   Ethernet.begin(mac);
 }
 
 void connectMqtt() {
-  client.setServer(mqttServer, mqttPort);
-  client.setCallback(callback);
+  Serial.println("Connecting to MQTT start:");
 
-  while (!client.connected()) {
-    Serial.println("Connecting to MQTT...");
-    if (!client.connect("deviceId", mqttUser, mqttPassword )) {
-      Serial.print("failed with state ");
-      Serial.print(client.state());
+  Serial.println("- reset previous status (settingsOutputInitial)");
+  memset(settingsOutputInitial, 0, sizeof(settingsOutputInitial));
+
+  Serial.println("- set server:");
+  Serial.print("- adddress:");
+  Serial.println(mqttServer);
+  Serial.print("- port:");
+  Serial.println(mqttPort);
+
+  mqttClient.setServer(mqttServer, mqttPort);
+
+  Serial.println("- set MQTT callback");
+
+  mqttClient.setCallback(callback);
+
+  while (!mqttClient.connected()) {
+    Serial.println("Connecting to server...");
+    if (!mqttClient.connect("deviceId", mqttUser, mqttPassword )) {
+      Serial.print("- failed with state ");
+      Serial.println(mqttClient.state());
       delay(5000);
     }
   }
-  Serial.println("connected"); 
+  Serial.println("- connected"); 
 
+  Serial.println("Set subscribe for all OUTPUT topics:");
   for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
-    client.subscribe(settingsOutput[i].subscribedTopic);
+    Serial.print(" - ");
+    Serial.println(settingsOutput[i].subscribedTopic);
+
+    mqttClient.subscribe(settingsOutput[i].subscribedTopic);
   }
+
+  Serial.println("Connection and setup MQTT complete!");
 }
 
 void restartAllConnections() {
-      // Serial.println("Restart WiFi connection...");
-      // WiFi.disconnect();
-      // connectWifi();
-
-      Ethernet.begin(mac);
+      Serial.println("RESTARTING ALL CONNECTIONS");
+      connectEthernet();
 
       Serial.println("Restart MQTT connection...");
-      client.disconnect();
+      mqttClient.disconnect();
+      
       connectMqtt();
 }
