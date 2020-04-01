@@ -1,7 +1,0 @@
-{
-    "terminal.integrated.env.osx": {
-        "PATH": "/Users/kuthanj/.platformio/penv/bin:/Users/kuthanj/.platformio/penv:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        "PLATFORMIO_CALLER": "vscode"
-    },
-    "C_Cpp.errorSquiggles": "Enabled"
-}
