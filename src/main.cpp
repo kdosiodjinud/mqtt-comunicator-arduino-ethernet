@@ -5,13 +5,18 @@
 
 // ethernet 
 byte mac[]    = {  0xDE, 0xED, 0xBA, 0xFE, 0xFE, 0xED };
-const char* hostname = "RelayBoard1";
+const char* hostname = "RelayBoard-1";
 
  // mqtt server
 const char* mqttServer = "192.168.1.100";
 const int mqttPort = 1883;
 const char* mqttUser = "admin";
 const char* mqttPassword = "admin";
+
+// firmware
+const char* hearthbeatTopic = "devices/arduino/relayboard-1/heartbeat";
+const int ethCheckConnectionTimerMillis = 5000;
+const int hearthbeatTimerMillis = 5000;
 //#############################################
 
 
@@ -73,14 +78,12 @@ struct settingsInput {
 int settingsOutputInitial[99];
 int settingsInputPrevious[99];
 
-
-// WiFiClient espClient;
 EthernetClient ethClient;
 PubSubClient mqttClient(ethClient);
 AsyncDelay delay_ethCheckConnection;
+AsyncDelay delay_hearthbeat;
 
 // main methods definitions
-void connectWifi();
 void connectEthernet();
 void connectMqtt();
 void restartAllConnections();
@@ -92,7 +95,13 @@ void publishPortStatusToMqtt(char* topic, int port, bool publishTrueIfInputLow);
 void setup() {
   Serial.begin(115200);
 
-  delay_ethCheckConnection.start(5000, AsyncDelay::MILLIS); // timer for check ethernet connection
+  Serial.print("Set timer for check ethernet connection to (miliseconds):");
+  Serial.println(ethCheckConnectionTimerMillis);
+  delay_ethCheckConnection.start(ethCheckConnectionTimerMillis, AsyncDelay::MILLIS);
+
+  Serial.print("Set timer for sending heartbeat to (miliseconds):");
+  Serial.println(hearthbeatTimerMillis);
+  delay_hearthbeat.start(hearthbeatTimerMillis, AsyncDelay::MILLIS);
 
   // prepare output pins (set PINs as OUTPUT and write default value from config)
   Serial.println("Setting pin mode for OUTPUTS:");
@@ -125,13 +134,11 @@ void setup() {
     }
   }
 
-  // connectWifi();
   connectEthernet();
   connectMqtt();
 }
 
 void loop() {
-
   if (delay_ethCheckConnection.isExpired()) {
     Serial.println("Check ethernet connection.");
 
@@ -145,6 +152,15 @@ void loop() {
   }
 
   mqttClient.loop();
+
+  if (delay_hearthbeat.isExpired()) {
+    Serial.print("Send hearthbeat to topic: ");
+    Serial.println(hearthbeatTopic);
+
+    mqttClient.publish(hearthbeatTopic, "ON", true);
+
+    delay_hearthbeat.repeat();
+  }
 
   for (int i =0; i < sizeof(settingsInput) / sizeof(settingsInput[0]); i++) {
     if (digitalRead(settingsInput[i].pin) != settingsInputPrevious[i]) {
@@ -193,7 +209,14 @@ void callback(char* topic, byte* payload, unsigned int length) {
         Serial.print("- value for ping: ");
         Serial.println(settingsOutput[i].valueForPing);
 
-        setPortViaMqttTopicStatus(settingsOutput[i].pin, settingsOutput[i].subscribedTopic, payload, length, settingsOutput[i].pingAndReturn, settingsOutput[i].valueForPing);
+        setPortViaMqttTopicStatus(
+          settingsOutput[i].pin,
+          settingsOutput[i].subscribedTopic,
+          payload,
+          length,
+          settingsOutput[i].pingAndReturn,
+          settingsOutput[i].valueForPing
+        );
       } else {
         Serial.println("- settingsOutputInitial for pin NOT exists! Creating!");
         settingsOutputInitial[i] = digitalRead(settingsOutput[i].pin);
@@ -231,7 +254,7 @@ void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned in
           digitalWrite(port, valueForPing);
             Serial.print("Set: ");
             Serial.println(valueForPing);
-          delay(100); //todo: predělat na async
+          delay(50); //todo: predělat na async
           digitalWrite(port, !valueForPing);
             Serial.print("Set: ");
             Serial.println(!valueForPing);
