@@ -12,6 +12,7 @@ const char* mqttServer = "192.168.1.100";
 const int mqttPort = 1883;
 const char* mqttUser = "admin";
 const char* mqttPassword = "admin";
+const char* mqttDeviceId = "RelayBoard-1";
 
 // firmware
 const char* hearthbeatTopic = "devices/arduino/relayboard-1/heartbeat";
@@ -83,103 +84,44 @@ PubSubClient mqttClient(ethClient);
 AsyncDelay delay_ethCheckConnection;
 AsyncDelay delay_hearthbeat;
 
-// main methods definitions
 void connectEthernet();
 void connectMqtt();
 void restartAllConnections();
+void pushHearthbeat();
+void prepareOutputPins();
+void prepareInputPins();
+bool connectionIsOk();
+void prepareTimers();
+void checkEthernetAndReconnectIfConnectionLost();
+void checkMqttConnectionAndReconnectIfConnectionLost();
+void checkInputChangesAndPublishToMqtt();
 void callback(char* topic, byte* payload, unsigned int length);
 void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned int length, bool pingAndReturn, bool valueForPing);
 void publishPortStatusToMqtt(char* topic, int port, bool publishTrueIfInputLow);
 
-// master setup method
 void setup() {
   Serial.begin(115200);
 
-  Serial.print("Set timer for check ethernet connection to (miliseconds):");
-  Serial.println(ethCheckConnectionTimerMillis);
-  delay_ethCheckConnection.start(ethCheckConnectionTimerMillis, AsyncDelay::MILLIS);
+  prepareTimers();
 
-  Serial.print("Set timer for sending heartbeat to (miliseconds):");
-  Serial.println(hearthbeatTimerMillis);
-  delay_hearthbeat.start(hearthbeatTimerMillis, AsyncDelay::MILLIS);
-
-  // prepare output pins (set PINs as OUTPUT and write default value from config)
-  Serial.println("Setting pin mode for OUTPUTS:");
-  for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
-    Serial.print("- subscribe topic: ");
-    Serial.println(settingsOutput[i].subscribedTopic);
-    Serial.print("- pin: ");
-    Serial.println(settingsOutput[i].pin);
-    Serial.print("- logic: ");
-    Serial.println(settingsOutput[i].defaultLogic);
-
-    pinMode(settingsOutput[i].pin, OUTPUT);
-    digitalWrite(settingsOutput[i].pin, settingsOutput[i].defaultLogic);
-  }
-
-  // prepare input pins
-  Serial.println("Setting pin mode for INPUTS:");
-  for (int i =0; i < sizeof(settingsInput) / sizeof(settingsInput[0]); i++) {
-    Serial.print("- subscribe topic: ");
-    Serial.println(settingsInput[i].publishToTopic);
-    Serial.print("- pin: ");
-    Serial.println(settingsInput[i].pin);
-  
-    pinMode(settingsInput[i].pin, INPUT);
-
-    if (settingsInput[i].publishTrueIfInputLow) {
-      Serial.print("- set as HIGH for enable pull-up");
-
-      digitalWrite(settingsInput[i].pin, HIGH); // Enable pull-up rezistors
-    }
-  }
+  prepareOutputPins();
+  prepareInputPins();
 
   connectEthernet();
   connectMqtt();
 }
 
 void loop() {
-  if (delay_ethCheckConnection.isExpired()) {
-    Serial.println("Check ethernet connection.");
 
-    if (!ethClient.connected()) {
-        Serial.println("Connection lost... Reconnecting...");
-        connectEthernet();
-        connectMqtt();
-    }
+  checkEthernetAndReconnectIfConnectionLost();
 
-    delay_ethCheckConnection.repeat();
-  }
+  checkMqttConnectionAndReconnectIfConnectionLost();
 
   mqttClient.loop();
 
-  if (delay_hearthbeat.isExpired()) {
-    Serial.print("Send hearthbeat to topic: ");
-    Serial.println(hearthbeatTopic);
+  pushHearthbeat();
 
-    mqttClient.publish(hearthbeatTopic, "ON", true);
-
-    delay_hearthbeat.repeat();
-  }
-
-  for (int i =0; i < sizeof(settingsInput) / sizeof(settingsInput[0]); i++) {
-    if (digitalRead(settingsInput[i].pin) != settingsInputPrevious[i]) {
-      Serial.println("SettingsInput have changes, publish PIN status to MQTT (publishPortStatusToMqtt):");
-      Serial.print(" - topic: ");
-      Serial.println(settingsInput[i].publishToTopic);
-      Serial.print(" - pin: ");
-      Serial.println(settingsInput[i].pin);
-      Serial.print(" - publish true if input low: ");
-      Serial.println(settingsInput[i].publishTrueIfInputLow);
-
-      publishPortStatusToMqtt(settingsInput[i].publishToTopic, settingsInput[i].pin, settingsInput[i].publishTrueIfInputLow);
-
-      Serial.print(" - set settingsInputPrevious:");
-      Serial.println(settingsInput[i].pin);
-
-      settingsInputPrevious[i] = digitalRead(settingsInput[i].pin);
-    }
-  }
+  checkInputChangesAndPublishToMqtt();
 }
 
 // MQTT subscribe
@@ -244,6 +186,8 @@ void publishPortStatusToMqtt(char* topic, int pin, bool publishTrueIfInputLow) {
     Serial.println(pin);
     Serial.println("##############");
   } else {
+    Serial.print("Publishing failed! Restart all connections!!!");
+
     restartAllConnections();
   }
 }
@@ -286,7 +230,7 @@ void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned in
 }
 
 void connectEthernet() {
-  Serial.println("Connect to ethernet wire");
+  Serial.print("Connecting to ethernet network.");
 
   Ethernet.begin(mac);
 }
@@ -310,14 +254,19 @@ void connectMqtt() {
   mqttClient.setCallback(callback);
 
   while (!mqttClient.connected()) {
-    Serial.println("Connecting to server...");
-    if (!mqttClient.connect("deviceId", mqttUser, mqttPassword )) {
+    Serial.print("Connecting MQTT to server: ");
+
+    if (!mqttClient.connect(mqttDeviceId, mqttUser, mqttPassword )) {
+
+      Serial.print("(disconnect all mqtt connections)");
+      mqttClient.disconnect();
+
       Serial.print("- failed with state ");
       Serial.println(mqttClient.state());
       delay(5000);
     }
   }
-  Serial.println("- connected"); 
+  Serial.println("- connected");  
 
   Serial.println("Set subscribe for all OUTPUT topics:");
   for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
@@ -338,4 +287,111 @@ void restartAllConnections() {
       mqttClient.disconnect();
       
       connectMqtt();
+}
+
+void pushHearthbeat() {
+  if (delay_hearthbeat.isExpired()) {
+    Serial.print("Send hearthbeat to topic: ");
+    Serial.println(hearthbeatTopic);
+
+    mqttClient.publish(hearthbeatTopic, "ON", true);
+
+    delay_hearthbeat.repeat();
+  }
+}
+
+bool connectionIsOk() {
+  return ethClient.connected();
+}
+
+void checkEthernetAndReconnectIfConnectionLost() {
+  if (delay_ethCheckConnection.isExpired()) {
+    Serial.print("Check network connection: ");
+
+    if (!connectionIsOk()) {
+        Serial.print("lost");
+
+        Serial.println("Connection lost... Reconnecting...");
+        restartAllConnections();
+    }
+
+    Serial.print("ok");
+
+    delay_ethCheckConnection.repeat();
+  }
+}
+
+void checkMqttConnectionAndReconnectIfConnectionLost() {
+  if (!mqttClient.connected()) {
+    Serial.println("Connection to MQTT server lost - reconnecting.");
+    connectMqtt();
+  }
+}
+
+void prepareTimers() {
+  Serial.print("Set timer for check ethernet connection to (miliseconds):");
+  Serial.println(ethCheckConnectionTimerMillis);
+
+  delay_ethCheckConnection.start(ethCheckConnectionTimerMillis, AsyncDelay::MILLIS);
+
+  Serial.print("Set timer for sending heartbeat to (miliseconds):");
+  Serial.println(hearthbeatTimerMillis);
+
+  delay_hearthbeat.start(hearthbeatTimerMillis, AsyncDelay::MILLIS);
+}
+
+void prepareOutputPins() {
+  Serial.println("Setting pin mode for OUTPUTS:");
+  
+  for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
+    Serial.print("- subscribe topic: ");
+    Serial.println(settingsOutput[i].subscribedTopic);
+    Serial.print("- pin: ");
+    Serial.println(settingsOutput[i].pin);
+    Serial.print("- logic: ");
+    Serial.println(settingsOutput[i].defaultLogic);
+
+    pinMode(settingsOutput[i].pin, OUTPUT);
+    digitalWrite(settingsOutput[i].pin, settingsOutput[i].defaultLogic);
+  }
+}
+
+void prepareInputPins() {
+  Serial.println("Setting pin mode for INPUTS:");
+
+  for (int i =0; i < sizeof(settingsInput) / sizeof(settingsInput[0]); i++) {
+    Serial.print("- subscribe topic: ");
+    Serial.println(settingsInput[i].publishToTopic);
+    Serial.print("- pin: ");
+    Serial.println(settingsInput[i].pin);
+  
+    pinMode(settingsInput[i].pin, INPUT);
+
+    if (settingsInput[i].publishTrueIfInputLow) {
+      Serial.print("- set as HIGH for enable pull-up");
+
+      digitalWrite(settingsInput[i].pin, HIGH); // Enable pull-up rezistors
+    }
+  }
+}
+
+void checkInputChangesAndPublishToMqtt() {
+  for (int i =0; i < sizeof(settingsInput) / sizeof(settingsInput[0]); i++) {
+    if (digitalRead(settingsInput[i].pin) != settingsInputPrevious[i]) {
+      Serial.println("SettingsInput have changes, publish PIN status to MQTT (publishPortStatusToMqtt):");
+      Serial.print(" - topic: ");
+      Serial.println(settingsInput[i].publishToTopic);
+      Serial.print(" - pin: ");
+      Serial.println(settingsInput[i].pin);
+      Serial.print(" - publish true if input low: ");
+      Serial.println(settingsInput[i].publishTrueIfInputLow);
+
+      publishPortStatusToMqtt(settingsInput[i].publishToTopic, settingsInput[i].pin, settingsInput[i].publishTrueIfInputLow);
+
+      Serial.print(" - set settingsInputPrevious:");
+      Serial.println(settingsInput[i].pin);
+
+      settingsInputPrevious[i] = digitalRead(settingsInput[i].pin);
+    }
+  }
 }
