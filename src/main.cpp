@@ -79,6 +79,7 @@ struct settingsInput {
 
 int settingsOutputInitial[99];
 int settingsInputPrevious[99];
+bool infoOutputPinDelayForPing[99];
 AsyncDelay OutputPinDelayForPing[99];
 
 EthernetClient ethClient;
@@ -110,6 +111,10 @@ void setup() {
 
   prepareOutputPins();
   prepareInputPins();
+
+  for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
+    infoOutputPinDelayForPing[i] = false;
+  }
 
   connectEthernet();
   connectMqtt();
@@ -171,8 +176,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
       }
     }
   }
- 
-  Serial.println("-----------------------");
 }
 
 void publishPortStatusToMqtt(char* topic, int pin, bool publishTrueIfInputLow) {
@@ -300,13 +303,13 @@ void checkEthernetAndReconnectIfConnectionLost() {
     Serial.print("Check network connection: ");
 
     if (!connectionIsOk()) {
-        Serial.print("lost");
+        Serial.println("lost");
 
         Serial.println("Connection lost... Reconnecting...");
         restartAllConnections();
     }
 
-    Serial.print("ok");
+    Serial.println("ok");
 
     delay_ethCheckConnection.repeat();
   }
@@ -400,7 +403,7 @@ void checkInputChangesAndPublishToMqtt() {
 
 void checkAsyncPingsForSetDefaultValue() {
   for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
-    if(OutputPinDelayForPing[i].isExpired()) {
+    if(OutputPinDelayForPing[i].isExpired() && infoOutputPinDelayForPing[i]) {
       Serial.print("Async ping expired, set pin ");
       Serial.print(settingsOutput[i].pin);
       Serial.print(" to default value ");
@@ -410,12 +413,14 @@ void checkAsyncPingsForSetDefaultValue() {
       Serial.println(")");
 
       digitalWrite(settingsOutput[i].pin, !settingsOutput[i].valueForPing);
+
+      infoOutputPinDelayForPing[i] = false; //todo: refactor na objekt společný s timerem
     }
   }
 }
 
 void pingPinAndSetAsyncTimer(int pin, bool valueForPing, int arrayIndex) {
-  Serial.print("Ping pin  ");
+  Serial.print("Ping pin ");
   Serial.print(pin);
   Serial.print(" with value ");
   Serial.print(valueForPing);
@@ -423,4 +428,5 @@ void pingPinAndSetAsyncTimer(int pin, bool valueForPing, int arrayIndex) {
 
   digitalWrite(pin, valueForPing);
   OutputPinDelayForPing[arrayIndex].restart();
+  infoOutputPinDelayForPing[arrayIndex] = true;
 }
