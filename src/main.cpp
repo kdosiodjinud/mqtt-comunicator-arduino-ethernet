@@ -18,6 +18,7 @@ const char* mqttDeviceId = "RelayBoard-1";
 const char* hearthbeatTopic = "devices/arduino/relayboard-1/heartbeat";
 const int ethCheckConnectionTimerMillis = 5000;
 const int hearthbeatTimerMillis = 5000;
+const int pingTimerMillis = 100;
 //#############################################
 
 
@@ -78,6 +79,7 @@ struct settingsInput {
 
 int settingsOutputInitial[99];
 int settingsInputPrevious[99];
+AsyncDelay OutputPinDelayForPing[99];
 
 EthernetClient ethClient;
 PubSubClient mqttClient(ethClient);
@@ -95,8 +97,10 @@ void prepareTimers();
 void checkEthernetAndReconnectIfConnectionLost();
 void checkMqttConnectionAndReconnectIfConnectionLost();
 void checkInputChangesAndPublishToMqtt();
+void checkAsyncPingsForSetDefaultValue();
+void pingPinAndSetAsyncTimer(int pin, bool valueForPing, int arrayIndex);
 void callback(char* topic, byte* payload, unsigned int length);
-void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned int length, bool pingAndReturn, bool valueForPing);
+void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned int length, bool pingAndReturn, bool valueForPing, int arrayIndex);
 void publishPortStatusToMqtt(char* topic, int port, bool publishTrueIfInputLow);
 
 void setup() {
@@ -112,7 +116,6 @@ void setup() {
 }
 
 void loop() {
-
   checkEthernetAndReconnectIfConnectionLost();
 
   checkMqttConnectionAndReconnectIfConnectionLost();
@@ -122,6 +125,8 @@ void loop() {
   pushHearthbeat();
 
   checkInputChangesAndPublishToMqtt();
+
+  checkAsyncPingsForSetDefaultValue();
 }
 
 // MQTT subscribe
@@ -157,7 +162,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
           payload,
           length,
           settingsOutput[i].pingAndReturn,
-          settingsOutput[i].valueForPing
+          settingsOutput[i].valueForPing,
+          i
         );
       } else {
         Serial.println("- settingsOutputInitial for pin NOT exists! Creating!");
@@ -192,41 +198,26 @@ void publishPortStatusToMqtt(char* topic, int pin, bool publishTrueIfInputLow) {
   }
 }
 
-void setPortViaMqttTopicStatus(int port, char *topic, byte *payload, unsigned int length, bool pingAndReturn, bool valueForPing) {
-      if (!strncmp((char *)payload, "ON", length)) {
-        if (pingAndReturn) {
-          digitalWrite(port, valueForPing);
-            Serial.print("Set: ");
-            Serial.println(valueForPing);
-          delay(50); //todo: predělat na async
-          digitalWrite(port, !valueForPing);
-            Serial.print("Set: ");
-            Serial.println(!valueForPing);
+//todo: refactor method parameters
+void setPortViaMqttTopicStatus(int pin, char *topic, byte *payload, unsigned int length, bool pingAndReturn, bool valueForPing, int arrayIndex) {
+  if (pingAndReturn) {
+    pingPinAndSetAsyncTimer(pin, valueForPing, arrayIndex);
+  } else {
+      Serial.print("PIN: ");
+      Serial.print(pin);
 
-            Serial.print("PORT ");
-            Serial.print(port);
-            Serial.println(" pinged.");
-        } else {
-          digitalWrite(port, HIGH);
-            Serial.print("PORT ");
-            Serial.print(port);
-            Serial.println(" set to HIGH.");
-        }
+      if (!strncmp((char *)payload, "ON", length)) {
+        digitalWrite(pin, HIGH);
+            
+         Serial.println(" set to HIGH.");
       } else if (!strncmp((char *)payload, "OFF", length)) {
-         if (pingAndReturn) {
-          digitalWrite(port, valueForPing);
-          delay(100);
-          digitalWrite(port, !valueForPing);
-            Serial.print("PORT ");
-            Serial.print(port);
-            Serial.println(" pinged.");
-        } else {
-          digitalWrite(port, LOW);
-            Serial.print("PORT ");
-            Serial.print(port);
-            Serial.println(" set to LOW.");
-        }
+          digitalWrite(pin, LOW);
+           
+          Serial.println(" set to LOW.");
+      } else {
+        Serial.println(" unknown payload for process pins setup!");
       }
+  }
 }
 
 void connectEthernet() {
@@ -338,6 +329,17 @@ void prepareTimers() {
   Serial.println(hearthbeatTimerMillis);
 
   delay_hearthbeat.start(hearthbeatTimerMillis, AsyncDelay::MILLIS);
+
+  Serial.println("Init timers for async ping values:");
+  for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
+    Serial.print("- timer for ping to topic ");
+    Serial.print(settingsOutput[i].subscribedTopic);
+    Serial.println(" created");
+
+    OutputPinDelayForPing[i] = AsyncDelay();
+    OutputPinDelayForPing[i].start(pingTimerMillis, AsyncDelay::MILLIS);
+  }
+
 }
 
 void prepareOutputPins() {
@@ -394,4 +396,31 @@ void checkInputChangesAndPublishToMqtt() {
       settingsInputPrevious[i] = digitalRead(settingsInput[i].pin);
     }
   }
+}
+
+void checkAsyncPingsForSetDefaultValue() {
+  for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
+    if(OutputPinDelayForPing[i].isExpired()) {
+      Serial.print("Async ping expired, set pin ");
+      Serial.print(settingsOutput[i].pin);
+      Serial.print(" to default value ");
+      Serial.print(!settingsOutput[i].valueForPing);
+      Serial.print(" (topic: ");
+      Serial.print(settingsOutput[i].subscribedTopic);
+      Serial.println(")");
+
+      digitalWrite(settingsOutput[i].pin, !settingsOutput[i].valueForPing);
+    }
+  }
+}
+
+void pingPinAndSetAsyncTimer(int pin, bool valueForPing, int arrayIndex) {
+  Serial.print("Ping pin  ");
+  Serial.print(pin);
+  Serial.print(" with value ");
+  Serial.print(valueForPing);
+  Serial.println(" and restart timer for start async return to default");
+
+  digitalWrite(pin, valueForPing);
+  OutputPinDelayForPing[arrayIndex].restart();
 }
