@@ -17,8 +17,8 @@ const char* mqttDeviceId = "RelayBoard-1";
 // firmware
 const char* hearthbeatTopic = "devices/arduino/relayboard-1/heartbeat";
 const int ethCheckConnectionTimerMillis = 5000;
-const int hearthbeatTimerMillis = 5000;
-const int pingTimerMillis = 100;
+const int hearthbeatTimerMillis = 10000;
+const int pingTimerMillis = 50;
 //#############################################
 
 
@@ -88,15 +88,14 @@ AsyncDelay delay_ethCheckConnection;
 AsyncDelay delay_hearthbeat;
 
 void connectEthernet();
-void connectMqtt();
+bool connectMqtt();
 void restartAllConnections();
 void pushHearthbeat();
 void prepareOutputPins();
 void prepareInputPins();
-bool connectionIsOk();
 void prepareTimers();
-void checkEthernetAndReconnectIfConnectionLost();
-void checkMqttConnectionAndReconnectIfConnectionLost();
+bool checkEthernetAndReconnectIfConnectionLost();
+bool checkMqttConnectionAndReconnectIfConnectionLost();
 void checkInputChangesAndPublishToMqtt();
 void checkAsyncPingsForSetDefaultValue();
 void pingPinAndSetAsyncTimer(int pin, bool valueForPing, int arrayIndex);
@@ -121,17 +120,13 @@ void setup() {
 }
 
 void loop() {
-  checkEthernetAndReconnectIfConnectionLost();
-
-  checkMqttConnectionAndReconnectIfConnectionLost();
-
-  mqttClient.loop();
-
-  pushHearthbeat();
-
-  checkInputChangesAndPublishToMqtt();
-
   checkAsyncPingsForSetDefaultValue();
+
+  if (checkEthernetAndReconnectIfConnectionLost() && checkMqttConnectionAndReconnectIfConnectionLost()) {
+    mqttClient.loop();
+    pushHearthbeat();
+    checkInputChangesAndPublishToMqtt();
+  }
 }
 
 // MQTT subscribe
@@ -229,48 +224,52 @@ void connectEthernet() {
   Ethernet.begin(mac);
 }
 
-void connectMqtt() {
+bool connectMqtt() {
+
+  bool connected = false;
+
   Serial.println("Connecting to MQTT start:");
 
   Serial.println("- reset previous status (settingsOutputInitial)");
   memset(settingsOutputInitial, 0, sizeof(settingsOutputInitial));
 
-  Serial.println("- set server:");
-  Serial.print("- adddress:");
-  Serial.println(mqttServer);
-  Serial.print("- port:");
+  Serial.print("- set server: ");
+  Serial.print(mqttServer);
+  Serial.print(":");
   Serial.println(mqttPort);
-
   mqttClient.setServer(mqttServer, mqttPort);
 
   Serial.println("- set MQTT callback");
-
   mqttClient.setCallback(callback);
 
-  while (!mqttClient.connected()) {
+  if (!mqttClient.connected()) {
     Serial.print("Connecting MQTT to server: ");
 
     if (!mqttClient.connect(mqttDeviceId, mqttUser, mqttPassword )) {
-
-      Serial.print("(disconnect all mqtt connections)");
-      mqttClient.disconnect();
-
       Serial.print("- failed with state ");
       Serial.println(mqttClient.state());
-      delay(5000);
+      delay(2000);
     }
   }
-  Serial.println("- connected");  
 
-  Serial.println("Set subscribe for all OUTPUT topics:");
-  for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
-    Serial.print(" - ");
-    Serial.println(settingsOutput[i].subscribedTopic);
+  if (!mqttClient.connected()) {
+    Serial.println("- cannot connect, try later..."); 
+  } else {
+    Serial.println("- connected"); 
+    connected = true;
 
-    mqttClient.subscribe(settingsOutput[i].subscribedTopic);
+    Serial.println("Set subscribe for all OUTPUT topics:");
+    for (int i =0; i < sizeof(settingsOutput) / sizeof(settingsOutput[0]); i++) {
+      Serial.print(" - ");
+      Serial.println(settingsOutput[i].subscribedTopic);
+
+      mqttClient.subscribe(settingsOutput[i].subscribedTopic);
+    }
+
+    Serial.println("Connection and setup MQTT complete!");
   }
 
-  Serial.println("Connection and setup MQTT complete!");
+  return connected;
 }
 
 void restartAllConnections() {
@@ -294,32 +293,37 @@ void pushHearthbeat() {
   }
 }
 
-bool connectionIsOk() {
-  return ethClient.connected();
-}
+bool checkEthernetAndReconnectIfConnectionLost() {
+  bool connected = true;
 
-void checkEthernetAndReconnectIfConnectionLost() {
   if (delay_ethCheckConnection.isExpired()) {
     Serial.print("Check network connection: ");
 
-    if (!connectionIsOk()) {
+    connected = false;
+    if (!ethClient.connected()) {
         Serial.println("lost");
 
         Serial.println("Connection lost... Reconnecting...");
-        restartAllConnections();
+        connectEthernet();
+    } else {
+      Serial.println("ok");
     }
-
-    Serial.println("ok");
 
     delay_ethCheckConnection.repeat();
   }
+
+  return connected;
 }
 
-void checkMqttConnectionAndReconnectIfConnectionLost() {
+bool checkMqttConnectionAndReconnectIfConnectionLost() {
+  bool connected = true;
+
   if (!mqttClient.connected()) {
     Serial.println("Connection to MQTT server lost - reconnecting.");
-    connectMqtt();
+    connected = connectMqtt();
   }
+
+  return connected;
 }
 
 void prepareTimers() {
@@ -414,7 +418,7 @@ void checkAsyncPingsForSetDefaultValue() {
 
       digitalWrite(settingsOutput[i].pin, !settingsOutput[i].valueForPing);
 
-      infoOutputPinDelayForPing[i] = false; //todo: refactor na objekt společný s timerem
+      infoOutputPinDelayForPing[i] = false;
     }
   }
 }
